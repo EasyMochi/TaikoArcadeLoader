@@ -1,7 +1,12 @@
 // ReSharper disable CppTooWideScopeInitStatement
 #include "helpers.h"
 #include "../patches.h"
+#include <cstdlib>
+#include <cstring>
 #include <map>
+
+extern u64 song_data_size;
+extern void *song_data;
 
 namespace patches::JPN39 {
 int language = 0;
@@ -464,6 +469,93 @@ ReplaceLeaBufferAddress (const std::vector<uintptr_t> &bufferAddresses, void *ne
     }
 }
 
+
+constexpr i32 expandedSongCount = 9000;
+const uintptr_t expandedSongCountAddresses[] = {
+    0x1402E0D5D,
+    0x1403F1A86,
+    0x1403F1E14,
+    0x1403F1F24,
+    0x1403F2044,
+    0x1403F2184,
+    0x1403F33F4,
+    0x1403FD936,
+    0x1403FDA00,
+    0x1403FDB34,
+    0x1403F1B46,
+    0x1404050EB,
+    0x1404051B8,
+    0x140405285,
+    0x1404053AB,
+    0x140405478,
+    0x140405545,
+    0x14040564A,
+    0x1403F3C3A,
+    0x1402E1AB6,
+    0x1403F452F,
+    0x1403F2365,
+    0x1403F4609,
+    0x1403F4C02,
+    0x140454C6C,
+    0x1403FDC03,
+    0x14014E0AD,
+    0x1403F24EC,
+    0x1403F30A1,
+    0x14043E6B2,
+    0x14043E6FE,
+    0x14015935D,
+    0x14015CCD1,
+    0x14015CD01,
+    0x1403E0FB5,
+    0x1403E139F,
+    0x1403F4686,
+    0x1403F46D7,
+    0x1403F4CC6,
+    0x1404056EE,
+    0x1402E1C66,
+    0x1402E22B6,
+    0x1403F29FB,
+    0x1403F2A91,
+};
+
+struct SongDataRedirect {
+    uintptr_t address;
+    u8 rex;
+    u8 opcode;
+};
+
+// Recovered from the known-working DLL. 49 B8 is mov r8, imm64;
+// 48 BA is mov rdx, imm64.
+const SongDataRedirect songDataRedirects[] = {
+    {0x1403F1A9B, 0x49, 0xB8},
+    {0x1403FDA16, 0x48, 0xBA},
+    {0x1403FD94C, 0x48, 0xBA},
+    {0x1403FDB4A, 0x48, 0xBA},
+    {0x1403F3407, 0x49, 0xB8},
+    {0x1403F2062, 0x49, 0xB8},
+    {0x14040555C, 0x48, 0xBA},
+    {0x1404051CF, 0x48, 0xBA},
+    {0x140405102, 0x48, 0xBA},
+    {0x14040529C, 0x48, 0xBA},
+    {0x1404051CF, 0x48, 0xBA},
+    {0x140405102, 0x48, 0xBA},
+    {0x14040548F, 0x48, 0xBA},
+    {0x140405661, 0x48, 0xBA},
+    {0x1404053C2, 0x48, 0xBA},
+    {0x1403F1B75, 0x48, 0xBA},
+    {0x1403F1E2B, 0x48, 0xBA},
+    {0x1403F1F6C, 0x48, 0xBA},
+    {0x1403F21CC, 0x48, 0xBA},
+};
+
+void
+WriteSongDataRedirect (const SongDataRedirect &redirect) {
+    u8 patch[10] = {redirect.rex, redirect.opcode};
+    const auto address = reinterpret_cast<u64> (song_data);
+    std::memcpy (patch + 2, &address, sizeof (address));
+    WRITE_MEMORY_STRING (ASLR (redirect.address), patch, sizeof (patch));
+}
+
 void
 Init () {
     LogMessage (LogLevel::INFO, "Init JPN39 patches");
@@ -563,6 +655,23 @@ Init () {
         ReplaceLeaBufferAddress (datatableBuffer2Addresses, datatableBuffer2.data ());
         ReplaceLeaBufferAddress (datatableBuffer3Addresses, datatableBuffer3.data ());
     }
+
+    // Expand card/profile song-indexed storage from the original 1600-song limit.
+    for (const auto address : expandedSongCountAddresses)
+        WRITE_MEMORY (ASLR (address), i32, expandedSongCount);
+
+    song_data = std::malloc (song_data_size);
+    std::memset (song_data, 0, song_data_size);
+
+    // Preserve the write order used by the known-working DLL. The NOP block is
+    // directly adjacent to the redirect at 0x140405661.
+    for (size_t i = 0; i < 15; i++)
+        WriteSongDataRedirect (songDataRedirects[i]);
+
+    WRITE_NOP (ASLR (0x14040566B), 5);
+
+    for (size_t i = 15; i < sizeof (songDataRedirects) / sizeof (songDataRedirects[0]); i++)
+        WriteSongDataRedirect (songDataRedirects[i]);
 
     // Fix Language
     TestMode::RegisterItem(
